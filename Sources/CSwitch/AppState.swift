@@ -2,6 +2,17 @@ import AppKit
 import Foundation
 import SwiftUI
 
+enum TunnelOperationError: LocalizedError {
+    case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .timedOut:
+            return "Tunnel start timed out after 15 seconds"
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var accounts: [AccountRecord] = []
@@ -16,6 +27,7 @@ final class AppState: ObservableObject {
     @Published var remoteSettings: RemoteSettings = .defaults
     @Published var tunnelRunning = false
     @Published var tunnelLastError: String?
+    @Published var tunnelStatusDetail: String?
     @Published var isRemoteBusy = false
     @Published var tunnelPID: Int32?
 
@@ -30,15 +42,35 @@ final class AppState: ObservableObject {
     private let switcher = AuthSwitcher()
     private let oauth = OAuthService()
     private let relauncher = CodexRelauncher()
+    private var tunnelStatusObserver: NSObjectProtocol?
 
     init() {
         remoteSettings = remoteSettingsStore.load()
-        applyTunnelSnapshot(tunnelManager.snapshot())
+        applyTunnelSnapshot(tunnelManager.inMemorySnapshot())
         store.repairMissingTokenFiles()
         reload()
+
+        tunnelStatusObserver = NotificationCenter.default.addObserver(
+            forName: .tunnelStatusDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshTunnelStatus()
+            }
+        }
     }
 
     var tunnelStatusText: String {
+        if let tunnelStatusDetail {
+            if tunnelRunning {
+                return tunnelStatusDetail
+            }
+            if let tunnelLastError {
+                return "\(tunnelStatusDetail): \(tunnelLastError)"
+            }
+            return tunnelStatusDetail
+        }
         if tunnelRunning {
             return "Tunnel running"
         }
@@ -73,13 +105,16 @@ final class AppState: ObservableObject {
     }
 
     func refreshTunnelStatus() {
-        applyTunnelSnapshot(tunnelManager.snapshot())
+        guard !isRemoteBusy else { return }
+        applyTunnelSnapshot(tunnelManager.snapshot(discoverLocal: true, settings: remoteSettings))
     }
 
     private func applyTunnelSnapshot(_ snapshot: TunnelSnapshot) {
         tunnelRunning = snapshot.isRunning
         tunnelPID = snapshot.pid
-        tunnelLastError = snapshot.lastError
+        tunnelStatusDetail = snapshot.statusDetail
+            ?? (snapshot.isRunning ? "Tunnel running" : "Tunnel stopped")
+        tunnelLastError = snapshot.isRunning ? nil : snapshot.lastError
     }
 
     func startTunnel(using settings: RemoteSettings) {
@@ -110,15 +145,36 @@ final class AppState: ObservableObject {
             let validated = try settings.validated()
             try remoteSettingsStore.save(validated)
 
-            try await Task.detached(priority: .userInitiated) {
-                try SSHTunnelManager.shared.start(settings: validated)
-            }.value
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await Task.detached(priority: .userInitiated) {
+                        try SSHTunnelManager.shared.start(settings: validated)
+                    }.value
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 15_000_000_000)
+                    throw TunnelOperationError.timedOut
+                }
+                _ = try await group.next()
+                group.cancelAll()
+            }
 
             remoteSettings = validated
-            applyTunnelSnapshot(tunnelManager.snapshot())
-            statusMessage = "Tunnel started"
+            let snapshot = tunnelManager.inMemorySnapshot()
+            applyTunnelSnapshot(snapshot)
+            if snapshot.isLikelyActive {
+                statusMessage = "Remote port in use — tunnel likely active"
+            } else {
+                statusMessage = "Tunnel started"
+            }
+        } catch is TunnelOperationError {
+            await Task.detached(priority: .userInitiated) {
+                SSHTunnelManager.shared.stop()
+            }.value
+            applyTunnelSnapshot(tunnelManager.inMemorySnapshot())
+            errorMessage = TunnelOperationError.timedOut.errorDescription
         } catch {
-            applyTunnelSnapshot(tunnelManager.snapshot())
+            applyTunnelSnapshot(tunnelManager.inMemorySnapshot())
             errorMessage = error.localizedDescription
         }
     }
@@ -134,7 +190,7 @@ final class AppState: ObservableObject {
             SSHTunnelManager.shared.stop()
         }.value
 
-        applyTunnelSnapshot(tunnelManager.snapshot())
+        applyTunnelSnapshot(tunnelManager.inMemorySnapshot())
         statusMessage = "Tunnel stopped"
     }
 
@@ -144,22 +200,25 @@ final class AppState: ObservableObject {
         errorMessage = nil
 
         Task { @MainActor in
+            defer { isRemoteBusy = false }
             do {
                 let validated = try settings.validated()
                 try remoteSettingsStore.save(validated)
                 remoteSettings = validated
-                try authRemoteSync.sync(settings: validated)
+                let syncService = authRemoteSync
+                try await Task.detached(priority: .userInitiated) {
+                    try syncService.sync(settings: validated)
+                }.value
                 statusMessage = "Synced auth.json to \(validated.sshTarget):\(validated.remoteAuthPath)"
             } catch {
                 errorMessage = error.localizedDescription
             }
-            isRemoteBusy = false
         }
     }
 
     func shutdownRemoteServices() {
         tunnelManager.stopIfRunning()
-        applyTunnelSnapshot(tunnelManager.snapshot())
+        applyTunnelSnapshot(tunnelManager.inMemorySnapshot())
     }
 
     func switchAccount(_ account: AccountRecord, restartAfter: Bool = false) {

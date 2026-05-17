@@ -93,12 +93,16 @@ struct RemoteToolsView: View {
         }
         .onAppear {
             draftSettings = appState.remoteSettings
+            appState.refreshTunnelStatus()
             syncTunnelDisplayFromAppState()
         }
         .onChange(of: appState.tunnelRunning) { _, _ in
             syncTunnelDisplayFromAppState()
         }
         .onChange(of: appState.tunnelPID) { _, _ in
+            syncTunnelDisplayFromAppState()
+        }
+        .onChange(of: appState.tunnelStatusDetail) { _, _ in
             syncTunnelDisplayFromAppState()
         }
         .onChange(of: appState.tunnelLastError) { _, _ in

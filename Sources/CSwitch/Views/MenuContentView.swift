@@ -30,6 +30,11 @@ struct MenuContentView: View {
             appState.reload()
             appState.refreshTunnelStatus()
         }
+        .onChange(of: screen) { _, newScreen in
+            if newScreen == .remoteTunnel {
+                appState.refreshTunnelStatus()
+            }
+        }
     }
 
     // MARK: - Home
