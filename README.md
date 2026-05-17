@@ -53,7 +53,7 @@
 ### 方式 A：构建 `.app`（推荐）
 
 ```bash
-git clone https://github.com/<your-org>/Codex-Desktop-Switch.git
+git clone https://github.com/yuzekai1234/Codex-Desktop-Switch.git
 cd Codex-Desktop-Switch
 
 # 生成 dist/C-Switch.app
