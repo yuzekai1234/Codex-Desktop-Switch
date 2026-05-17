@@ -1,0 +1,46 @@
+# Swift / SPM
+.build/
+.swiftpm/
+Packages/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# Packaged app (run scripts/package_app.sh to produce)
+dist/
+
+# macOS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# Secrets & local runtime data (never commit)
+.env
+.env.*
+*.pem
+*.key
+secrets/
+remote-settings.json
+accounts.json
+**/tokens/
+
+# Debug symbols & archives
+*.dSYM/
+*.dmg
+*.zip
+
+# Logs & temp
+*.log
+tmp/
+.cache/
+
+# Cursor (local agent/editor state)
+.cursor/
